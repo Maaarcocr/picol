@@ -10,3 +10,6 @@ async-task = "4"
 flume = "0.10.14"
 futures-lite = "1"
 io-uring = "0.5.13"
+
+[dev-dependencies]
+async-std = "1.12.0"
