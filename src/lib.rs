@@ -1,6 +1,8 @@
-use std::{future::Future, os::fd::AsRawFd};
+use std::{future::Future, os::fd::{AsRawFd, RawFd}};
 
-use futures_lite::{future::{block_on, or}};
+use async_task::{Runnable, Task};
+use futures_lite::{future::{or, self}};
+use once_cell::sync::Lazy;
 
 struct Entry {
     pub fd: i32,
@@ -12,10 +14,13 @@ struct Entry {
 
 thread_local! {
     static SUBMISSION_QUEUE: (flume::Sender<Entry>, flume::Receiver<Entry>) = flume::unbounded();
-    static COMPLETION_QUEUE: (flume::Sender<()>, flume::Receiver<()>) = flume::unbounded();
+    static RING: io_uring::IoUring = io_uring::IoUring::new(8).unwrap();
+    static NUMBER_OF_PROCESSING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 }
 
-async fn read_submissions(ring: &io_uring::IoUring) {
+static PROCESSING_QUEUE: Lazy<(flume::Sender<Runnable>, flume::Receiver<Runnable>)> = Lazy::new(|| flume::unbounded());
+
+async fn read_submissions() {
     let receiver = SUBMISSION_QUEUE.with(|(_, r)| r.clone());
     let entry = receiver.recv_async().await.unwrap();
     let waker = Box::new(entry.waker.clone());
@@ -24,90 +29,106 @@ async fn read_submissions(ring: &io_uring::IoUring) {
         .offset(entry.offset)
         .build();
     let read_e = read_e.user_data(waker as *const _ as u64);
-    unsafe { ring.submission_shared().push(&read_e).expect("submission queue is full"); }
-    ring.submit().unwrap();
-    COMPLETION_QUEUE.with(|(s, _)| {
-        s.send(()).unwrap();
+    RING.with(|ring| {
+        unsafe { ring.submission_shared().push(&read_e).expect("submission queue is full"); }
+        ring.submit().unwrap();
+    });
+                        
+    NUMBER_OF_PROCESSING.with(|n| {
+        n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    spawn(
+        read_completions()
+    ).detach();
+}
+
+async fn read_completions() {
+    RING.with(|ring| {
+        let n = NUMBER_OF_PROCESSING.with(|n| n.swap(0, std::sync::atomic::Ordering::Relaxed));
+        if n == 0 {
+            return;
+        }
+        ring.submit_and_wait(n).unwrap();
+        
+        let mut cq = unsafe { ring.completion_shared() };
+        for _ in 0..n {
+            let cqe = cq.next().unwrap();
+            let waker = cqe.user_data() as *mut std::task::Waker;
+            let waker = unsafe { Box::from_raw(waker) };
+            waker.wake();
+        }
     });
 }
 
-async fn read_completions(ring: &io_uring::IoUring) {
-    let receiver = COMPLETION_QUEUE.with(|(_, r)| r.clone());
-    receiver.recv_async().await.unwrap();
-
-    ring.submit_and_wait(1).unwrap();
-    let mut cq = unsafe { ring.completion_shared() };
-    let cqe = cq.next().unwrap();
-    let waker = cqe.user_data() as *mut std::task::Waker;
-    let waker = unsafe { Box::from_raw(waker) };
-    waker.wake()
-}
-
-pub struct AsynFileRead<'a> {
-    file: std::fs::File,
-    result: &'a mut Vec<u8>,
+pub struct AsynFileRead {
+    file: RawFd,
+    result: Vec<u8>,
     offset: i64,
     len: u32,
     enqueue: bool,
 }
 
-pub async fn read(file: std::fs::File, offset: i64, len: u32) -> Vec<u8> {
-    let mut result = vec![0; len as usize];
+pub fn read(file: &std::fs::File, offset: i64, len: u32) -> AsynFileRead  {
+    let result = vec![0; len as usize];
     let read = AsynFileRead {
-        file,
-        result: &mut result,
+        file: file.as_raw_fd(),
+        result,
         offset,
         len,
         enqueue: true,
     };
-    read.await;
-    result
+    read
 }
 
-impl<'a> Future for AsynFileRead<'a> {
-    type Output = ();
+impl Future for AsynFileRead {
+    type Output = Vec<u8>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         if self.enqueue {
+            self.enqueue = false;
             SUBMISSION_QUEUE.with(|(s, _)| {
                 s.send(Entry {
-                    fd: self.file.as_raw_fd(),
+                    fd: self.file,
                     offset: self.offset,
                     len: self.len,
                     result: self.result.as_mut_ptr(),
                     waker: cx.waker().clone(),
                 }).unwrap();
             });
-            self.enqueue = false;
+            spawn(async {
+                read_submissions().await;
+            }).detach();
             std::task::Poll::Pending
         } else {
-            std::task::Poll::Ready(())
+            std::task::Poll::Ready(std::mem::take(&mut self.result))
         }
     }
 }
 
-pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
-    let ring = io_uring::IoUring::new(8).unwrap();
-
+pub fn spawn<T: 'static>(future: impl Future<Output = T> + 'static) -> Task<T> {
     // Create a task that runs the future.
-    let (s, r) = flume::unbounded();
     let (runnable, task) = async_task::spawn_local(future, move |runnable| {
         // Schedule the task by sending it to the queue.
-        s.send(runnable).unwrap();
+        PROCESSING_QUEUE.0.send(runnable).unwrap();
     });
 
     // Run the task.
     runnable.schedule();
+    task
+}
 
-    block_on(async {
+pub fn block_on<T: 'static>(future: impl Future<Output = T> + 'static) -> T {
+    future::block_on(async {
         let processing_task = async {
+            let receiver = &PROCESSING_QUEUE.1;
+
             loop {
-                or(async {
-                    r.recv_async().await.unwrap().run();
-                }, or(read_submissions(&ring), read_completions(&ring))).await;
+                let runnable = receiver.recv_async().await.unwrap();
+                runnable.run();
             }
         };
-        let res = or(task, processing_task).await;
+        let res = or(spawn(future), processing_task).await;
 
         res
     })
