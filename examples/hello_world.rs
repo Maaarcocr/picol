@@ -8,8 +8,6 @@ fn main() {
         let task1 = async {
             println!("Task1 start");
             let f = std::fs::File::open("examples/hello_world.rs").unwrap();
-            async_io::Timer::after(Duration::from_secs(1)).await;
-
             let r = read(&f, 0, 10).await;
             let s = std::str::from_utf8(&r).unwrap();
             println!("Task1: {}", s);
