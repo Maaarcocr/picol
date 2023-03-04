@@ -12,12 +12,11 @@ about how to best build an async runtime, nor about io-uring.
 
 picol runs everything in a single thread, no background threads are used. When you want to for example read from a file, you would
 call the `read` function. This in turns, create a new future, which on the first time it gets polled would spawn a new async task,
-whose job would be to enqueue a new read submission to io-uring. After this, another task is enqueued which will wait on as many io-uring submission
+whose job would be to enqueue a new read submission to io-uring. After this, another task (with low priority) is enqueued which will wait on as many io-uring submission
 as there have been. 
 
-Currently this is not super performant, as in most cases we would wait on each io request on its own. My idea is that if I could have some sort of priority queue
-for tasks, then the reading completion task could be assigned the lowest priority, thus it would be able to wait for as many tasks as possible. Right now, this is not
-the case.
+The idea around having a low priority task is that I think it's good to do as much CPU work before waiting for IO (the IO operations will be carried on by the kernel in the meantime, 
+do not block on them to be done). Maybe it's a bad idea, but for now it's what I'm exploring!
 
 ## what can it do? 
 
