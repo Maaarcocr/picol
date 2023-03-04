@@ -49,6 +49,7 @@ async fn read_completions() {
         if n == 0 {
             return;
         }
+
         ring.submit_and_wait(n).unwrap();
         
         let mut cq = unsafe { ring.completion_shared() };

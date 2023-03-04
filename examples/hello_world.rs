@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use picol::{spawn, read, block_on};
+use picol::{read, block_on};
 
 fn main() {
     // Run the future on the current thread.
-    block_on(spawn(async {
+    block_on(async {
         let task1 = async {
             println!("Task1 start");
             let f = std::fs::File::open("examples/hello_world.rs").unwrap();
@@ -23,5 +23,5 @@ fn main() {
             println!("Task2: {}", s);
         };
         futures_lite::future::zip(task1, task2).await;
-    }));
+    });
 }
