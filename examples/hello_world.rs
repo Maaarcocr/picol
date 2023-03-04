@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use picol::{read, block_on};
 
 fn main() {
@@ -8,7 +6,8 @@ fn main() {
         let task1 = async {
             println!("Task1 start");
             let f = std::fs::File::open("examples/hello_world.rs").unwrap();
-            let r = read(&f, 0, 10).await;
+            let buf = vec![0u8; 10];
+            let r = read(&f, buf, 0).await;
             let s = std::str::from_utf8(&r).unwrap();
             println!("Task1: {}", s);
 
@@ -16,7 +15,8 @@ fn main() {
         let task2 = async {
             println!("Task2 start");
             let f = std::fs::File::open("examples/hello_world.rs").unwrap();
-            let r = read(&f, 10, 10).await;
+            let buf = vec![0u8; 10];
+            let r = read(&f, buf, 10).await;
             let s = std::str::from_utf8(&r).unwrap();
             println!("Task2: {}", s);
         };

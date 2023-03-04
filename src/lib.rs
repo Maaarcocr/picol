@@ -73,11 +73,11 @@ pub struct AsynFileRead {
     enqueue: bool,
 }
 
-pub fn read(file: &std::fs::File, offset: i64, len: u32) -> AsynFileRead  {
-    let result = vec![0; len as usize];
+pub fn read(file: &std::fs::File, buf: Vec<u8>, offset: i64) -> AsynFileRead  {
+    let len = buf.len() as u32;
     let read = AsynFileRead {
         file: file.as_raw_fd(),
-        result,
+        result: buf,
         offset,
         len,
         enqueue: true,
