@@ -1,3 +1,1 @@
-mod file;
-
-pub use file::*;
+pub mod file;

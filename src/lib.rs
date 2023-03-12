@@ -5,6 +5,7 @@ use futures_lite::{future::{or, self}};
 use once_cell::sync::Lazy;
 
 pub mod fs;
+pub mod net;
 mod io;
 
 thread_local! {

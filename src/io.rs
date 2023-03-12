@@ -1,4 +1,4 @@
-use std::{task::{Poll, Context}, pin::Pin, future::Future, rc::Rc};
+use std::{task::{Poll, Context}, pin::Pin, future::Future, rc::Rc, io};
 use io_uring::squeue::Entry;
 
 use crate::{spawn_low_priority, spawn};
@@ -55,7 +55,7 @@ impl UringFuture {
 }
 
 impl Future for UringFuture {
-    type Output = i32;
+    type Output = io::Result<i32>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(entry) = self.entry.take() {
@@ -73,10 +73,10 @@ impl Future for UringFuture {
             Poll::Pending
         } else if let Some(result) = *self.result.as_ref() {
             if result < 0 {
-                // TODO: Handle error
-                panic!("Error: {}", result);
+                Poll::Ready(Err(io::Error::from_raw_os_error(-result)))
+            } else {
+                Poll::Ready(Ok(result))
             }
-            Poll::Ready(result)
         } else {
             Poll::Pending
         } 
