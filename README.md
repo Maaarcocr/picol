@@ -20,6 +20,8 @@ do not block on them to be done). Maybe it's a bad idea, but for now it's what I
 
 ## what can it do? 
 
+### Reading and writing from a file
+
 ```rust
 use picol::{block_on};
 
@@ -48,7 +50,30 @@ fn main() {
 }
 ```
 
-as of now, I've only implemented reading from a file. But it can do that! And it can do that in an async way!
+### Basic tcp operations
+
+```rust
+use picol::{block_on, spawn};
+
+fn main() {
+    block_on(async {
+        let tcp_listener = picol::net::tcp_listener::TcpListener::bind("0.0.0.0:8080").unwrap();
+        loop {
+            let tcp_stream = tcp_listener.accept().await.unwrap();
+            println!("tcp_stream accepted");
+            spawn(async move {
+                loop {
+                    let buf = vec![0u8; 1024];
+                    let (_, buf) = tcp_stream.read(buf).await.unwrap();
+                    println!("read {}", std::str::from_utf8(&buf).unwrap());
+                    tcp_stream.write(buf).await.unwrap();
+                }
+            }).detach();
+        }
+    })
+}
+```
+
 
 ## thank you notes
 
