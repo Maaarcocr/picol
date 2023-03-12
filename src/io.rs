@@ -1,4 +1,4 @@
-use std::{task::{Poll, Context}, pin::Pin, future::Future};
+use std::{task::{Poll, Context}, pin::Pin, future::Future, rc::Rc};
 use io_uring::squeue::Entry;
 
 use crate::{spawn_low_priority, spawn};
@@ -25,37 +25,31 @@ pub async fn handle_submission(entry: Entry) {
 
 async fn read_completions() {
     RING.with(|ring| {
-        let n = NUMBER_OF_PROCESSING.with(|n| n.swap(0, std::sync::atomic::Ordering::Relaxed));
-        if n == 0 {
-            return;
-        }
+        NUMBER_OF_PROCESSING.with(|n| n.fetch_sub(1, std::sync::atomic::Ordering::Relaxed));
 
-        println!("read_completions: {}", n);
-
-        ring.submit_and_wait(n).unwrap();
+        ring.submit_and_wait(1).unwrap();
         
         let mut cq = unsafe { ring.completion_shared() };
-        for _ in 0..n {
-            let cqe = cq.next().unwrap();
-            let data = cqe.user_data() as *mut (std::task::Waker, *mut i32);
-            let data = unsafe { Box::from_raw(data) };
-            let (waker, result) = *data;
-            unsafe { *result = cqe.result() }
-            waker.wake();
-        }
+        let cqe = cq.next().unwrap();
+        let data = cqe.user_data() as *mut (std::task::Waker, *mut Option<i32>);
+        let data = unsafe { Box::from_raw(data) };
+        let (waker, result) = *data;
+        unsafe { *result = Some(cqe.result()) }
+        unsafe { Rc::from_raw(result) };
+        waker.wake();
     });
 }
 
 pub struct UringFuture {
     entry: Option<Entry>,
-    result: i32,
+    result: Rc<Option<i32>>,
 }
 
 impl UringFuture {
     pub fn new(entry: Entry) -> Self {
         Self {
             entry: Some(entry),
-            result: -1,
+            result: Rc::new(None),
         }
     }
 }
@@ -64,10 +58,9 @@ impl Future for UringFuture {
     type Output = i32;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.result == -1 {
+        if let Some(entry) = self.entry.take() {
             let waker = cx.waker().clone();
-            let entry = self.entry.take().unwrap();
-            let result_ptr = &mut self.result as *mut i32;
+            let result_ptr = Rc::into_raw(self.result.clone()) as *mut Option<i32>;
 
             let waker = Box::new((waker, result_ptr));
             let waker = Box::into_raw(waker);
@@ -78,8 +71,14 @@ impl Future for UringFuture {
                 handle_submission(read_e).await;
             }).detach();
             Poll::Pending
+        } else if let Some(result) = *self.result.as_ref() {
+            if result < 0 {
+                // TODO: Handle error
+                panic!("Error: {}", result);
+            }
+            Poll::Ready(result)
         } else {
-            Poll::Ready(self.result)
-        }
+            Poll::Pending
+        } 
     }
 }

@@ -1,4 +1,4 @@
-use std::{os::{fd::RawFd, unix::prelude::OsStrExt}, path::{Path}};
+use std::{os::{fd::RawFd, unix::ffi::OsStrExt}, path::{Path}, ffi::{CString}};
 
 use libc::AT_FDCWD;
 
@@ -9,11 +9,16 @@ pub struct File {
     offset: i64,
 }
 
+fn cstr<T: AsRef<Path>>(p: T) -> CString {
+    CString::new(p.as_ref().as_os_str().as_bytes()).unwrap()
+}
+
 impl File {
     pub async fn create<T: AsRef<Path>>(path: T) -> Self {
         let fd = io_uring::types::Fd(AT_FDCWD);
-        let entry = io_uring::opcode::OpenAt::new(fd, path.as_ref().as_os_str().as_bytes().as_ptr());
-        let entry = entry.flags(libc::O_CREAT | libc::O_RDWR | libc::O_TRUNC);
+        let path = cstr(path);
+        let entry = io_uring::opcode::OpenAt::new(fd, path.as_ptr());
+        let entry = entry.flags(libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC);
         let entry = entry.mode(0o644);
         let entry = entry.build();
         let result = UringFuture::new(entry).await;
@@ -26,7 +31,8 @@ impl File {
 
     pub async fn open<T: AsRef<Path>>(path: T) -> Self {
         let fd = io_uring::types::Fd(AT_FDCWD);
-        let entry = io_uring::opcode::OpenAt::new(fd, path.as_ref().as_os_str().as_bytes().as_ptr());
+        let path = cstr(path);
+        let entry = io_uring::opcode::OpenAt::new(fd, path.as_ptr());
         let entry = entry.flags(libc::O_RDWR);
         let entry = entry.mode(0o644);
         let entry = entry.build();
@@ -38,13 +44,29 @@ impl File {
         }
     }
 
-    pub async fn read(&mut self, mut buf: Vec<u8>) -> Vec<u8> {
+    pub async fn read(&mut self, buf: Vec<u8>) -> Vec<u8> {
         let len = buf.len() as u32;
-        let entry = io_uring::opcode::Read::new(io_uring::types::Fd(self.fd), buf.as_mut_ptr() as *mut u8, len)
+        let capacity = buf.capacity();
+        let buf = buf.leak();
+        let ptr = buf.as_mut_ptr();
+        let entry = io_uring::opcode::Read::new(io_uring::types::Fd(self.fd), ptr, len)
             .offset(self.offset)
             .build();
         let result = UringFuture::new(entry).await;
         self.offset += result as i64;
-        buf
+        unsafe { Vec::from_raw_parts(ptr, len.try_into().unwrap(), capacity) }
+    }
+
+    pub async fn write(&mut self, buf: Vec<u8>) -> (i32, Vec<u8>) {
+        let len = buf.len() as u32;
+        let capacity = buf.capacity();
+        let buf = buf.leak();
+        let ptr = buf.as_ptr();
+        let entry = io_uring::opcode::Write::new(io_uring::types::Fd(self.fd), ptr, len)
+            .offset(self.offset)
+            .build();
+        let result = UringFuture::new(entry).await;
+        self.offset += result as i64;
+        (result, unsafe { Vec::from_raw_parts(ptr as *mut u8, len.try_into().unwrap(), capacity) })
     }
 }
