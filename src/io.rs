@@ -14,10 +14,6 @@ pub async fn handle_submission(entry: Entry) {
         ring.submit().unwrap();
     });
                         
-    NUMBER_OF_PROCESSING.with(|n| {
-        n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    });
-
     spawn_low_priority(
         read_completions()
     ).detach();
@@ -25,8 +21,6 @@ pub async fn handle_submission(entry: Entry) {
 
 async fn read_completions() {
     RING.with(|ring| {
-        NUMBER_OF_PROCESSING.with(|n| n.fetch_sub(1, std::sync::atomic::Ordering::Relaxed));
-
         ring.submit_and_wait(1).unwrap();
         
         let mut cq = unsafe { ring.completion_shared() };

@@ -9,7 +9,10 @@ fn main() {
             spawn(async move {
                 loop {
                     let buf = vec![0u8; 1024];
-                    let (_, buf) = tcp_stream.read(buf).await.unwrap();
+                    let (read, buf) = tcp_stream.read(buf).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
                     println!("read {}", std::str::from_utf8(&buf).unwrap());
                     tcp_stream.write(buf).await.unwrap();
                 }
